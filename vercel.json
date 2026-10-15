@@ -1,0 +1,5 @@
+{
+  "rewrites": [
+    { "source": "/position/:file", "destination": "https://grandraid.sfr.re/position/:file" }
+  ]
+}
