@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Grand Raid en direct</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  html,body{height:100%;margin:0;font-family:system-ui,sans-serif}
+  #map{height:100%}
+  .panel{position:absolute;z-index:1000;top:12px;right:12px;background:#fff;color:#1d1633;border-radius:6px;
+    padding:10px 12px;box-shadow:0 1px 6px rgba(0,0,0,.3);font-size:13px;width:280px;max-width:calc(100% - 24px);box-sizing:border-box}
+  .panel h1{font-size:14px;margin:0 0 6px}
+  .row{display:flex;align-items:center;gap:8px;margin:4px 0}
+  .dot{width:12px;height:12px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 1px #888;flex:none}
+  button{margin-top:8px;font:inherit;padding:5px 10px;border:1px solid #5811E7;background:#5811E7;color:#fff;border-radius:4px;cursor:pointer}
+  button.alt{background:#fff;color:#5811E7}
+  .small{color:#6a6380;font-size:11px;margin-top:6px}
+  #status{font-weight:600}
+  .err{color:#c0301a}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="panel">
+  <h1>Diagonale des Fous</h1>
+  <div id="list"></div>
+  <div id="status" class="small">Chargement…</div>
+  <button id="zc">Zoom coureurs</button> <button id="zi" class="alt">Toute l'île</button>
+  <div class="small" id="msg"></div>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+// Dossards suivis : ajouter un numéro dans cette liste suffit.
+const BIBS=[{id:'1252',color:'#5811E7'},{id:'1229',color:'#17BF87'}];
+const REFRESH_MS=60000;
+const BASE='https://grandraid.sfr.re/position/';
+
+const fmt=t=>new Date(t*1000).toLocaleString('fr-FR',{timeZone:'Indian/Reunion',dateStyle:'short',timeStyle:'medium'});
+const ISLE=[[-21.40,55.20],[-20.85,55.85]];
+const map=L.map('map').fitBounds(ISLE);
+L.control.scale({imperial:false}).addTo(map);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,
+  attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'}).addTo(map);
+
+const state={};
+BIBS.forEach(b=>{
+  state[b.id]={pts:[],line:L.polyline([],{color:b.color,weight:4,opacity:.7}).addTo(map),
+    dot:null,olds:L.layerGroup().addTo(map),err:null,info:null};
+});
+
+// Relevés déjà connus au 15/10/2026, pour que le trait existe dès l'ouverture.
+[['1252',-21.3431,55.4667,1792087810],['1252',-21.3436,55.4709,1792087932],['1229',-21.3436,55.4685,1792087929]]
+  .forEach(([id,lat,lon,t])=>state[id].pts.push({ll:[lat,lon],t}));
+
+async function getJson(url){
+  const r=await fetch(url,{cache:'no-store'});
+  if(!r.ok)throw new Error('HTTP '+r.status);
+  return r.json();
+}
+async function load(id){
+  // Chemin relatif d'abord (serveur serve.py), puis URL directe.
+  let d;
+  try{d=await getJson('position/d'+id+'.json')}catch(e){d=await getJson(BASE+'d'+id+'.json')}
+  if(d.status!=='succes')throw new Error('status '+d.status);
+  const o=d.info[id];
+  const s=state[id];
+  s.info=o.infos;
+  const ll=[o.dernierePosition.lat,o.dernierePosition.long];
+  if(!s.pts.some(p=>p.t===d.lastmaj))s.pts.push({ll,t:d.lastmaj});
+  s.pts.sort((a,b)=>a.t-b.t);
+  s.err=null;
+}
+function draw(){
+  const all=[];
+  BIBS.forEach(b=>{
+    const s=state[b.id];if(!s.pts.length)return;
+    s.line.setLatLngs(s.pts.map(p=>p.ll));
+    s.olds.clearLayers();
+    s.pts.slice(0,-1).forEach(p=>L.circleMarker(p.ll,{radius:4,color:b.color,weight:2,fillColor:'#fff',fillOpacity:1})
+      .bindTooltip(fmt(p.t)).addTo(s.olds));
+    const last=s.pts[s.pts.length-1];
+    if(s.dot)s.dot.setLatLng(last.ll);
+    else s.dot=L.circleMarker(last.ll,{radius:9,color:'#fff',weight:3,fillColor:b.color,fillOpacity:1})
+      .bindTooltip('#'+b.id,{permanent:true,direction:'top',offset:[0,-10]}).addTo(map);
+    s.dot.bindPopup(`<b>#${b.id} ${s.info?s.info.prenom+' '+s.info.nom:''}</b><br>${s.info?s.info.etat+' · '+s.info.categorie:''}<br>${fmt(last.t)}`);
+    s.pts.forEach(p=>all.push(p.ll));
+  });
+  document.getElementById('list').innerHTML=BIBS.map(b=>{
+    const s=state[b.id],last=s.pts[s.pts.length-1];
+    return `<div class="row"><span class="dot" style="background:${b.color}"></span><span>#${b.id} ${s.info?s.info.prenom:''}<br>
+    <span class="small">${last?fmt(last.t):'aucun relevé'}${s.err?' · <span class="err">'+s.err+'</span>':''}</span></span></div>`}).join('');
+  return all;
+}
+let first=true;
+async function tick(){
+  const st=document.getElementById('status');
+  st.textContent='Mise à jour…';
+  await Promise.all(BIBS.map(b=>load(b.id).catch(e=>{state[b.id].err=e.message==='Failed to fetch'?'bloqué (CORS)':e.message})));
+  const all=draw();
+  const errs=BIBS.filter(b=>state[b.id].err).length;
+  st.innerHTML='Dernier appel '+new Date().toLocaleTimeString('fr-FR')+' · prochain dans 60 s';
+  document.getElementById('msg').textContent=errs?
+    'Le serveur grandraid.sfr.re n\'autorise pas l\'appel depuis un fichier local. Lancez python3 serve.py puis ouvrez http://localhost:8765/grandraid-live.html.':'';
+  if(first&&all.length){map.fitBounds(all,{padding:[80,80],maxZoom:16});first=false}
+}
+document.getElementById('zc').onclick=()=>{const a=draw();if(a.length)map.fitBounds(a,{padding:[80,80],maxZoom:16})};
+document.getElementById('zi').onclick=()=>map.fitBounds(ISLE);
+tick();setInterval(tick,REFRESH_MS);
+</script>
+</body>
+</html>
